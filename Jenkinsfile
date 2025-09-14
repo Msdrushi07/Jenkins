@@ -66,7 +66,7 @@ pipeline {
                     // Stop and remove old container if running
                     bat 'docker rm -f jenkins-demo-container || echo "No container to remove"'
                     // Run new container
-                    bat "docker run -d -p 8080:9090 --name jenkins-demo-container ${DOCKER_IMAGE}"
+                    bat "docker run -d -p 8085:9090 --name jenkins-demo-container ${DOCKER_IMAGE}"
                 }
             }
         }
