@@ -1,0 +1,144 @@
+We can extend your existing Jenkinsfile to deploy to Kubernetes after pushing the image to ECR. Here's a full approach:
+
+1️⃣ Prerequisites
+
+AWS CLI configured on Jenkins node (with permissions to ECR & optionally EKS).
+
+kubectl installed on Jenkins node and able to connect to your Kubernetes cluster.
+
+EKS cluster or any Kubernetes cluster where you want to deploy.
+
+Jenkins credentials for AWS (Access Key ID / Secret Key).
+
+2️⃣ Jenkinsfile (Extended for ECR + Kubernetes)
+pipeline {
+    agent any
+
+    tools {
+        jdk 'java21'
+        maven 'maven3'
+    }
+
+    environment {
+        DOCKER_IMAGE = "msdrushi07/jenkins-demo"
+        DOCKER_TAG = "${BUILD_NUMBER}"
+        AWS_REGION = "ap-south-1"
+        ECR_REGISTRY = "123456789012.dkr.ecr.${AWS_REGION}.amazonaws.com"
+        K8S_DEPLOYMENT_NAME = "jenkins-demo"
+        K8S_CONTAINER_PORT = "9090"
+        K8S_SERVICE_PORT = "8080"
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                git branch: 'master',
+                    credentialsId: 'git-credentials',
+                    url: 'https://github.com/Msdrushi07/Jenkins.git'
+            }
+        }
+
+        stage('Build & Test') {
+            steps {
+                bat 'mvn clean test'
+            }
+        }
+        
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv('sonarqube-server') {
+                    bat 'mvn sonar:sonar -Dsonar.projectKey=jenkins-demo -Dsonar.host.url=http://localhost:9000 -Dsonar.login=sqa_16c37050dd77122f93efe35805c0fb17c67b2729'
+                }
+            }
+        }
+
+        stage('Package') {
+            steps {
+                bat 'mvn clean package -DskipTests'
+            }
+        }
+        
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    bat "docker build -t ${DOCKER_IMAGE}:${DOCKER_TAG} -t ${DOCKER_IMAGE}:latest ."
+                    bat "docker tag ${DOCKER_IMAGE}:${DOCKER_TAG} ${ECR_REGISTRY}/${DOCKER_IMAGE}:${DOCKER_TAG}"
+                    bat "docker tag ${DOCKER_IMAGE}:latest ${ECR_REGISTRY}/${DOCKER_IMAGE}:latest"
+                }
+            }
+        }
+
+        stage('Push to ECR') {
+            steps {
+                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-credentials']]) {
+                    script {
+                        // Login to ECR
+                        bat "aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REGISTRY}"
+                        
+                        // Push images
+                        bat "docker push ${ECR_REGISTRY}/${DOCKER_IMAGE}:${DOCKER_TAG}"
+                        bat "docker push ${ECR_REGISTRY}/${DOCKER_IMAGE}:latest"
+                    }
+                }
+            }
+        }
+
+        stage('Deploy to Kubernetes') {
+            steps {
+                script {
+                    // Update image in Kubernetes deployment
+                    bat "kubectl set image deployment/${K8S_DEPLOYMENT_NAME} ${K8S_DEPLOYMENT_NAME}=${ECR_REGISTRY}/${DOCKER_IMAGE}:${DOCKER_TAG} --record"
+
+                    // Optional: rollout status to wait until deployment is complete
+                    bat "kubectl rollout status deployment/${K8S_DEPLOYMENT_NAME}"
+                }
+            }
+        }
+
+        stage('Archive JAR') {
+            steps {
+                archiveArtifacts artifacts: 'target/*.jar', fingerprint: true
+            }
+        }
+    }
+}
+
+3️⃣ Key Notes
+
+AWS Credentials:
+
+Add in Jenkins: Manage Jenkins -> Credentials -> AWS (Access Key / Secret Key)
+
+Used credentialsId: 'aws-credentials' in the Jenkinsfile.
+
+Kubernetes Deployment:
+
+Make sure you have a deployment already created with the same name (jenkins-demo).
+
+This Jenkinsfile updates the image and triggers a rolling update.
+
+ECR Registry:
+
+Replace 123456789012 with your AWS account ID.
+
+AWS Region must match where ECR is created.
+
+kubectl:
+
+Jenkins node must be able to reach your Kubernetes cluster.
+
+✅ Outcome:
+
+Build & test code
+
+SonarQube analysis
+
+Package JAR
+
+Build Docker image with tags
+
+Push to AWS ECR
+
+Deploy / update image in Kubernetes
+
+If you want, I can also create the Kubernetes Deployment YAML dynamically from Jenkins so you don’t even need to pre-create it manually. This way, Jenkins can create/update deployment automatically.

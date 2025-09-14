@@ -14,7 +14,7 @@ pipeline {
         stage('Checkout') {
             steps {
                 git branch: 'master',
-                    credentialsId: 'git-credentials',
+                    credentialsId: 'git-credentials',  // git-credentials id which is created inside manage jenkins -> security -> credentials
                     url: 'https://github.com/Msdrushi07/Jenkins.git'
             }
         }

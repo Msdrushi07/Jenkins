@@ -1,0 +1,541 @@
+Here's how you can update your Jenkins pipeline to handle versioned and latest tags for Docker images:
+Install Required Jenkins Plugins
+
+Amazon ECR / AWS Plugins (for AWS credentials and CLI support)
+
+AWS Steps Plugin
+
+Pipeline AWS Steps Plugin (if you want withAWS block, optional)
+
+Docker Pipeline Plugin
+
+Pipeline Plugin (already needed for Jenkinsfile)
+
+2️⃣ Configure Tools in Jenkins
+
+JDK
+
+Go to Manage Jenkins → Global Tool Configuration → JDK
+
+Add a JDK (e.g., java21) and ensure the path is correct.
+
+Maven
+
+Go to Manage Jenkins → Global Tool Configuration → Maven
+
+Add Maven (e.g., maven3) with correct installation path.
+
+Docker
+
+Make sure Docker is installed on the Jenkins agent node.
+
+If using Windows, Docker Desktop or Docker Engine must be running.
+
+SonarQube Scanner
+
+Go to Manage Jenkins → Global Tool Configuration → SonarQube Scanner
+
+Add SonarScanner 7.2 and name it (e.g., sonarscanner)
+
+3️⃣ Add Credentials
+
+Git Credentials
+
+Go to Jenkins → Credentials → System → Global credentials
+
+Add your GitHub credentials (username/password or personal access token)
+
+Use credentialsId in the Jenkinsfile (git-credentials).
+
+AWS Credentials
+
+Go to Jenkins → Credentials → System → Global credentials
+
+Add your AWS IAM user credentials (Access Key ID & Secret Access Key)
+
+Give it an ID (e.g., aws-credentials) and use in the Jenkinsfile.
+
+Optional: DockerHub Credentials (if you were using DockerHub earlier)
+
+Not needed for ECR now.
+
+4️⃣ Configure SonarQube Server
+
+Go to Manage Jenkins → Configure System → SonarQube Servers
+
+Add a server:
+
+Name: sonarqube-server (matches Jenkinsfile)
+
+Server URL: http://localhost:9000 (or your SonarQube URL)
+
+Credentials: sqa_16c37050dd77122f93efe35805c0fb17c67b2729 (token)
+
+5️⃣ Agent Node
+
+Make sure the Jenkins agent running this pipeline has:
+
+Docker installed and running
+
+AWS CLI installed
+
+Java & Maven installed
+
+Network access to your ECR repo and GitHub
+
+
+pipeline {
+    agent any
+
+    tools {
+        jdk 'java21'
+        maven 'maven3'
+    }
+    
+    environment {
+        DOCKER_IMAGE = "msdrushi07/jenkins-demo"
+        DOCKER_TAG = "${BUILD_NUMBER}"
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                git branch: 'master',
+                    credentialsId: 'git-credentials',
+                    url: 'https://github.com/Msdrushi07/Jenkins.git'
+            }
+        }
+
+        stage('Build & Test') {
+            steps {
+                bat 'mvn clean test'
+            }
+        }
+        
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv('sonarqube-server') {
+                    bat 'mvn sonar:sonar -Dsonar.projectKey=jenkins-demo -Dsonar.host.url=http://localhost:9000 -Dsonar.login=sqa_16c37050dd77122f93efe35805c0fb17c67b2729'
+                }
+            }
+        }
+
+        stage('Package') {
+            steps {
+                 bat 'mvn clean package -DskipTests'
+            }
+        }
+        
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    // Build with both versioned tag and latest tag
+                    bat "docker build -t ${DOCKER_IMAGE}:${DOCKER_TAG} -t ${DOCKER_IMAGE}:latest ."
+                }
+            }
+        }
+        
+        stage('Push to Docker Hub') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'dockerhub-credentials',
+                                                 usernameVariable: 'DOCKER_USER',
+                                                 passwordVariable: 'DOCKER_PASS')]) {
+                    script {
+                        bat "echo %DOCKER_PASS% | docker login -u %DOCKER_USER% --password-stdin"
+                        // Push both tags
+                        bat "docker push ${DOCKER_IMAGE}:${DOCKER_TAG}"
+                        bat "docker push ${DOCKER_IMAGE}:latest"
+                    }
+                }
+            }
+        }
+
+        stage('Run Docker Container') {
+            steps {
+                script {
+                    // Stop and remove old container if running
+                    bat 'docker rm -f jenkins-demo-container || echo "No container to remove"'
+                    // Run container with latest tag
+                    bat "docker run -d -p 8080:9090 --name jenkins-demo-container ${DOCKER_IMAGE}:latest"
+                }
+            }
+        }
+
+        stage('Archive JAR') {
+            steps {
+                archiveArtifacts artifacts: 'target/*.jar', fingerprint: true
+            }
+        }
+    }
+}
+
+
+✅ Changes made:
+
+DOCKER_TAG uses ${BUILD_NUMBER} so each build is versioned.
+
+Docker build now tags both latest and versioned tag.
+
+Push stage pushes both tags to Docker Hub.
+
+Run container stage runs the latest tag by default.
+
+If you want, we can also modify the run stage to automatically run a versioned container instead of overwriting the latest each time. This helps in rolling back easily.
+
+Do you want me to do that next?
+
+You said:
+Yes
+ChatGPT said:
+
+Perfect! Here's how you can modify the pipeline to run the versioned container while still keeping latest for easy access. This approach prevents overwriting running containers and allows rollback.
+
+pipeline {
+    agent any
+
+    tools {
+        jdk 'java21'
+        maven 'maven3'
+    }
+    
+    environment {
+        DOCKER_IMAGE = "msdrushi07/jenkins-demo"
+        DOCKER_TAG = "${BUILD_NUMBER}" // versioned tag
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                git branch: 'master',
+                    credentialsId: 'git-credentials',
+                    url: 'https://github.com/Msdrushi07/Jenkins.git'
+            }
+        }
+
+        stage('Build & Test') {
+            steps {
+                bat 'mvn clean test'
+            }
+        }
+        
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv('sonarqube-server') {
+                    bat 'mvn sonar:sonar -Dsonar.projectKey=jenkins-demo -Dsonar.host.url=http://localhost:9000 -Dsonar.login=sqa_16c37050dd77122f93efe35805c0fb17c67b2729'
+                }
+            }
+        }
+
+        stage('Package') {
+            steps {
+                 bat 'mvn clean package -DskipTests'
+            }
+        }
+        
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    bat "docker build -t ${DOCKER_IMAGE}:${DOCKER_TAG} -t ${DOCKER_IMAGE}:latest ."
+                }
+            }
+        }
+        
+        stage('Push to Docker Hub') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'dockerhub-credentials',
+                                                 usernameVariable: 'DOCKER_USER',
+                                                 passwordVariable: 'DOCKER_PASS')]) {
+                    script {
+                        bat "echo %DOCKER_PASS% | docker login -u %DOCKER_USER% --password-stdin"
+                        bat "docker push ${DOCKER_IMAGE}:${DOCKER_TAG}"
+                        bat "docker push ${DOCKER_IMAGE}:latest"
+                    }
+                }
+            }
+        }
+
+        stage('Run Docker Container') {
+            steps {
+                script {
+                    // Optional: stop previous versioned container
+                    bat "docker rm -f jenkins-demo-${DOCKER_TAG} || echo 'No container to remove'"
+                    
+                    // Run container using versioned tag
+                    bat "docker run -d -p 8080:9090 --name jenkins-demo-${DOCKER_TAG} ${DOCKER_IMAGE}:${DOCKER_TAG}"
+                    
+                    // Optional: update 'latest' container to point to this version
+                    bat "docker rm -f jenkins-demo-latest || echo 'No latest container to remove'"
+                    bat "docker run -d -p 8081:9090 --name jenkins-demo-latest ${DOCKER_IMAGE}:latest"
+                }
+            }
+        }
+
+        stage('Archive JAR') {
+            steps {
+                archiveArtifacts artifacts: 'target/*.jar', fingerprint: true
+            }
+        }
+    }
+}
+
+
+✅ What changed:
+
+Each build runs a container named jenkins-demo-${BUILD_NUMBER}, so old containers are preserved.
+
+The latest container is optional; you can run it on a different port (here 8081) for testing.
+
+Rolling back is easy—you can just run any older version by its tag.
+
+If you want, I can also add a cleanup step to automatically remove old containers/images after N builds so your Docker host doesn’t fill up.
+
+Do you want me to add that?
+
+You said:
+Yes
+ChatGPT said:
+
+Perfect! Here’s how you can add an automatic cleanup step in your Jenkins pipeline to remove old Docker images and containers, keeping only the last N builds. This prevents your Docker host from filling up.
+
+We'll use a new stage called Cleanup Old Docker Images & Containers:
+
+pipeline {
+    agent any
+
+    tools {
+        jdk 'java21'
+        maven 'maven3'
+    }
+    
+    environment {
+        DOCKER_IMAGE = "msdrushi07/jenkins-demo"
+        DOCKER_TAG = "${BUILD_NUMBER}" // versioned tag
+        KEEP_BUILDS = 5 // number of builds to keep
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                git branch: 'master',
+                    credentialsId: 'git-credentials',
+                    url: 'https://github.com/Msdrushi07/Jenkins.git'
+            }
+        }
+
+        stage('Build & Test') {
+            steps {
+                bat 'mvn clean test'
+            }
+        }
+        
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv('sonarqube-server') {
+                    bat 'mvn sonar:sonar -Dsonar.projectKey=jenkins-demo -Dsonar.host.url=http://localhost:9000 -Dsonar.login=sqa_16c37050dd77122f93efe35805c0fb17c67b2729'
+                }
+            }
+        }
+
+        stage('Package') {
+            steps {
+                 bat 'mvn clean package -DskipTests'
+            }
+        }
+        
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    bat "docker build -t ${DOCKER_IMAGE}:${DOCKER_TAG} -t ${DOCKER_IMAGE}:latest ."
+                }
+            }
+        }
+        
+        stage('Push to Docker Hub') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'dockerhub-credentials',
+                                                 usernameVariable: 'DOCKER_USER',
+                                                 passwordVariable: 'DOCKER_PASS')]) {
+                    script {
+                        bat "echo %DOCKER_PASS% | docker login -u %DOCKER_USER% --password-stdin"
+                        bat "docker push ${DOCKER_IMAGE}:${DOCKER_TAG}"
+                        bat "docker push ${DOCKER_IMAGE}:latest"
+                    }
+                }
+            }
+        }
+
+        stage('Run Docker Container') {
+            steps {
+                script {
+                    // Stop previous versioned container
+                    bat "docker rm -f jenkins-demo-${DOCKER_TAG} || echo 'No container to remove'"
+                    bat "docker run -d -p 8080:9090 --name jenkins-demo-${DOCKER_TAG} ${DOCKER_IMAGE}:${DOCKER_TAG}"
+
+                    // Optional: run 'latest' container on different port
+                    bat "docker rm -f jenkins-demo-latest || echo 'No latest container to remove'"
+                    bat "docker run -d -p 8081:9090 --name jenkins-demo-latest ${DOCKER_IMAGE}:latest"
+                }
+            }
+        }
+
+        stage('Archive JAR') {
+            steps {
+                archiveArtifacts artifacts: 'target/*.jar', fingerprint: true
+            }
+        }
+
+        stage('Cleanup Old Docker Images & Containers') {
+            steps {
+                script {
+                    // Remove old versioned containers keeping only the last ${KEEP_BUILDS}
+                    bat """
+                    for /f "skip=%KEEP_BUILDS% tokens=1" %%i in ('docker images ${DOCKER_IMAGE} --format "{{.Tag}}" ^| sort -r') do docker rmi -f ${DOCKER_IMAGE}:%%i
+                    """
+                    
+                    // Optional: prune dangling images
+                    bat "docker image prune -f"
+                }
+            }
+        }
+    }
+}
+
+✅ What this does:
+
+Keeps only the last 5 builds (you can change KEEP_BUILDS).
+
+Automatically removes old versioned Docker images to free up space.
+
+Also prunes dangling images that are not tagged.
+
+If you want, I can improve it further so it also stops and removes old containers automatically, not just images, so your host stays clean entirely.
+
+Do you want me to do that too?
+
+You said:
+Yes
+ChatGPT said:
+
+Perfect! Let’s extend your pipeline so it automatically stops and removes old Docker containers along with old images, keeping only the last N builds. This keeps your Jenkins host clean and avoids port conflicts.
+
+Here’s the improved pipeline:
+
+pipeline {
+    agent any
+
+    tools {
+        jdk 'java21'
+        maven 'maven3'
+    }
+    
+    environment {
+        DOCKER_IMAGE = "msdrushi07/jenkins-demo"
+        DOCKER_TAG = "${BUILD_NUMBER}" // versioned tag
+        KEEP_BUILDS = 5 // number of builds to keep
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                git branch: 'master',
+                    credentialsId: 'git-credentials',
+                    url: 'https://github.com/Msdrushi07/Jenkins.git'
+            }
+        }
+
+        stage('Build & Test') {
+            steps {
+                bat 'mvn clean test'
+            }
+        }
+        
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv('sonarqube-server') {
+                    bat 'mvn sonar:sonar -Dsonar.projectKey=jenkins-demo -Dsonar.host.url=http://localhost:9000 -Dsonar.login=sqa_16c37050dd77122f93efe35805c0fb17c67b2729'
+                }
+            }
+        }
+
+        stage('Package') {
+            steps {
+                 bat 'mvn clean package -DskipTests'
+            }
+        }
+        
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    bat "docker build -t ${DOCKER_IMAGE}:${DOCKER_TAG} -t ${DOCKER_IMAGE}:latest ."
+                }
+            }
+        }
+        
+        stage('Push to Docker Hub') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'dockerhub-credentials',
+                                                 usernameVariable: 'DOCKER_USER',
+                                                 passwordVariable: 'DOCKER_PASS')]) {
+                    script {
+                        bat "echo %DOCKER_PASS% | docker login -u %DOCKER_USER% --password-stdin"
+                        bat "docker push ${DOCKER_IMAGE}:${DOCKER_TAG}"
+                        bat "docker push ${DOCKER_IMAGE}:latest"
+                    }
+                }
+            }
+        }
+
+        stage('Run Docker Container') {
+            steps {
+                script {
+                    // Stop and remove previous container for this build
+                    bat "docker rm -f jenkins-demo-${DOCKER_TAG} || echo 'No container to remove'"
+                    bat "docker run -d -p 8080:9090 --name jenkins-demo-${DOCKER_TAG} ${DOCKER_IMAGE}:${DOCKER_TAG}"
+
+                    // Stop and remove latest container
+                    bat "docker rm -f jenkins-demo-latest || echo 'No latest container to remove'"
+                    bat "docker run -d -p 8081:9090 --name jenkins-demo-latest ${DOCKER_IMAGE}:latest"
+                }
+            }
+        }
+
+        stage('Archive JAR') {
+            steps {
+                archiveArtifacts artifacts: 'target/*.jar', fingerprint: true
+            }
+        }
+
+        stage('Cleanup Old Docker Containers & Images') {
+            steps {
+                script {
+                    // Remove old versioned containers keeping only the last ${KEEP_BUILDS}
+                    bat """
+                    for /f "skip=%KEEP_BUILDS% tokens=1" %%i in ('docker ps -a --filter "name=jenkins-demo-" --format "{{.Names}}" ^| sort -r') do docker rm -f %%i
+                    """
+
+                    // Remove old versioned images keeping only the last ${KEEP_BUILDS}
+                    bat """
+                    for /f "skip=%KEEP_BUILDS% tokens=1" %%i in ('docker images ${DOCKER_IMAGE} --format "{{.Tag}}" ^| sort -r') do docker rmi -f ${DOCKER_IMAGE}:%%i
+                    """
+
+                    // Optional: prune dangling images
+                    bat "docker image prune -f"
+                }
+            }
+        }
+    }
+}
+
+✅ Improvements:
+
+Old containers for previous builds are automatically stopped and removed.
+
+Old images for previous builds are removed, keeping only the last N builds.
+
+Keeps the latest container separate, mapped to a different port.
+
+Prunes dangling images automatically.
+
+If you want, I can also make it so only one latest container is running, and it automatically updates every build without needing a separate port. This is cleaner for production-like environments.
+
+Do you want me to do that?

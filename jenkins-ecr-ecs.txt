@@ -1,0 +1,362 @@
+We’ll take your existing Jenkinsfile and modify it to push the Docker image to AWS ECR instead of Docker Hub. We’ll also include proper tagging (BUILD_NUMBER + latest) and login using Jenkins-stored AWS credentials.
+
+Here’s the updated Jenkinsfile:
+
+
+Install Required Jenkins Plugins
+
+Amazon ECR / AWS Plugins (for AWS credentials and CLI support)
+
+AWS Steps Plugin
+
+Pipeline AWS Steps Plugin (if you want withAWS block, optional)
+
+Docker Pipeline Plugin
+
+Pipeline Plugin (already needed for Jenkinsfile)
+
+2️⃣ Configure Tools in Jenkins
+
+JDK
+
+Go to Manage Jenkins → Global Tool Configuration → JDK
+
+Add a JDK (e.g., java21) and ensure the path is correct.
+
+Maven
+
+Go to Manage Jenkins → Global Tool Configuration → Maven
+
+Add Maven (e.g., maven3) with correct installation path.
+
+Docker
+
+Make sure Docker is installed on the Jenkins agent node.
+
+If using Windows, Docker Desktop or Docker Engine must be running.
+
+SonarQube Scanner
+
+Go to Manage Jenkins → Global Tool Configuration → SonarQube Scanner
+
+Add SonarScanner 7.2 and name it (e.g., sonarscanner)
+
+3️⃣ Add Credentials
+
+Git Credentials
+
+Go to Jenkins → Credentials → System → Global credentials
+
+Add your GitHub credentials (username/password or personal access token)
+
+Use credentialsId in the Jenkinsfile (git-credentials).
+
+AWS Credentials
+
+Go to Jenkins → Credentials → System → Global credentials
+
+Add your AWS IAM user credentials (Access Key ID & Secret Access Key)
+
+Give it an ID (e.g., aws-credentials) and use in the Jenkinsfile.
+
+Here’s the step-by-step way to configure AWS credentials in Jenkins so your pipeline can push images to ECR:
+
+1️⃣ Create an IAM User in AWS
+
+Go to AWS Console → IAM → Users → Add users.
+
+Enter a username (e.g., jenkins-ecr-user).
+
+Choose Access type: Programmatic access (gives an Access Key ID & Secret Access Key).
+
+Click Next → Attach policies directly.
+
+Attach AmazonEC2ContainerRegistryFullAccess (for full ECR push/pull) and optionally AmazonEC2ContainerRegistryReadOnly if needed.
+
+Complete and copy Access Key ID & Secret Access Key (you’ll need them in Jenkins).
+
+2️⃣ Add AWS Credentials in Jenkins
+
+Go to Jenkins → Manage Jenkins → Credentials → System → Global credentials (unrestricted) → Add Credentials.
+
+Choose:
+
+Kind: AWS Credentials (if AWS Steps plugin installed)
+OR
+
+Kind: Username with password (if AWS plugin not installed, use Access Key ID as username, Secret Access Key as password)
+
+Enter your AWS keys:
+
+Access Key ID → Username field
+
+Secret Access Key → Password field
+
+Give it an ID (e.g., aws-credentials) → click OK.
+
+Optional: DockerHub Credentials (if you were using DockerHub earlier)
+
+Not needed for ECR now.
+
+4️⃣ Configure SonarQube Server
+
+Go to Manage Jenkins → Configure System → SonarQube Servers
+
+Add a server:
+
+Name: sonarqube-server (matches Jenkinsfile)
+
+Server URL: http://localhost:9000 (or your SonarQube URL)
+
+Credentials: sqa_16c37050dd77122f93efe35805c0fb17c67b2729 (token)
+
+5️⃣ Agent Node
+
+Make sure the Jenkins agent running this pipeline has:
+
+Docker installed and running
+
+AWS CLI installed
+
+Java & Maven installed
+
+Network access to your ECR repo and GitHub
+
+pipeline {
+    agent any
+
+    tools {
+        jdk 'java21'           // Name of JDK you configured in Jenkins
+        maven 'maven3'         // Name of Maven you configured in Jenkins
+    }
+
+    environment {
+        DOCKER_IMAGE = "jenkins-demo"       // Local image name
+        DOCKER_TAG = "${BUILD_NUMBER}"      // Tag based on build number
+        AWS_REGION = "ap-south-1"           // Change as per your region
+        ECR_ACCOUNT_ID = "123456789012"     // Replace with your AWS Account ID
+        ECR_REPO = "jenkins-demo"           // ECR repo name
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                git branch: 'master',
+                    credentialsId: 'git-credentials',
+                    url: 'https://github.com/Msdrushi07/Jenkins.git'
+            }
+        }
+
+        stage('Build & Test') {
+            steps {
+                bat 'mvn clean test'
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv('sonarqube-server') {
+                    bat 'mvn sonar:sonar -Dsonar.projectKey=jenkins-demo -Dsonar.host.url=http://localhost:9000 -Dsonar.login=sqa_16c37050dd77122f93efe35805c0fb17c67b2729'
+                }
+            }
+        }
+
+        stage('Package') {
+            steps {
+                 bat 'mvn clean package -DskipTests'
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    bat "docker build -t ${DOCKER_IMAGE}:${DOCKER_TAG} -t ${DOCKER_IMAGE}:latest ."
+                }
+            }
+        }
+
+        stage('Push to AWS ECR') {
+            steps {
+                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-credentials']]) {
+                    script {
+                        // Login to ECR
+                        bat "aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+                        
+                        // Tag the image for ECR
+                        bat "docker tag ${DOCKER_IMAGE}:${DOCKER_TAG} ${ECR_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${DOCKER_TAG}"
+                        bat "docker tag ${DOCKER_IMAGE}:latest ${ECR_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:latest"
+
+                        // Push both tags
+                        bat "docker push ${ECR_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${DOCKER_TAG}"
+                        bat "docker push ${ECR_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:latest"
+                    }
+                }
+            }
+        }
+
+        stage('Run Docker Container') {
+            steps {
+                script {
+                    // Stop and remove old container if running
+                    bat 'docker rm -f jenkins-demo-container || echo "No container to remove"'
+                    // Run new container
+                    bat "docker run -d -p 8080:9090 --name jenkins-demo-container ${DOCKER_IMAGE}:latest"
+                }
+            }
+        }
+
+        stage('Archive JAR') {
+            steps {
+                archiveArtifacts artifacts: 'target/*.jar', fingerprint: true
+            }
+        }
+    }
+}
+
+✅ Notes:
+
+AWS Credentials: Use Jenkins credentials ID aws-credentials (type AWS Credentials) with your IAM user keys.
+
+ECR Repo: Create the repo in AWS ECR first:
+
+aws ecr create-repository --repository-name jenkins-demo --region ap-south-1
+
+
+Docker Login: This pipeline logs in to AWS ECR automatically before pushing.
+
+Docker Tags: Both ${BUILD_NUMBER} and latest tags are pushed.
+
+Container Run: The container runs locally on port 8080 mapping to app port 9090.
+
+If you want, I can also make it fully dynamic so the pipeline creates the ECR repository automatically if it doesn’t exist. This avoids any manual setup in AWS.
+
+Do you want me to do that?
+
+You said:
+yes
+ChatGPT said:
+
+Perfect! We can make the pipeline fully dynamic so it will create the ECR repository automatically if it doesn’t exist, then build, tag, push the Docker image, and run the container. Here’s the updated Jenkinsfile:
+
+pipeline {
+    agent any
+
+    tools {
+        jdk 'java21'
+        maven 'maven3'
+    }
+
+    environment {
+        DOCKER_IMAGE = "jenkins-demo"
+        DOCKER_TAG = "${BUILD_NUMBER}"
+        AWS_REGION = "ap-south-1"
+        ECR_ACCOUNT_ID = "123456789012"    // Replace with your AWS account ID
+        ECR_REPO = "jenkins-demo"
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                git branch: 'master',
+                    credentialsId: 'git-credentials',
+                    url: 'https://github.com/Msdrushi07/Jenkins.git'
+            }
+        }
+
+        stage('Build & Test') {
+            steps {
+                bat 'mvn clean test'
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv('sonarqube-server') {
+                    bat 'mvn sonar:sonar -Dsonar.projectKey=jenkins-demo -Dsonar.host.url=http://localhost:9000 -Dsonar.login=sqa_16c37050dd77122f93efe35805c0fb17c67b2729'
+                }
+            }
+        }
+
+        stage('Package') {
+            steps {
+                 bat 'mvn clean package -DskipTests'
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    bat "docker build -t ${DOCKER_IMAGE}:${DOCKER_TAG} -t ${DOCKER_IMAGE}:latest ."
+                }
+            }
+        }
+
+        stage('Push to AWS ECR') {
+            steps {
+                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-credentials']]) {
+                    script {
+                        // Create ECR repo if not exists
+                        bat """
+                        aws ecr describe-repositories --repository-names ${ECR_REPO} --region ${AWS_REGION} || \
+                        aws ecr create-repository --repository-name ${ECR_REPO} --region ${AWS_REGION}
+                        """
+
+                        // Login to ECR
+                        bat "aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+
+                        // Tag the image for ECR
+                        bat "docker tag ${DOCKER_IMAGE}:${DOCKER_TAG} ${ECR_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${DOCKER_TAG}"
+                        bat "docker tag ${DOCKER_IMAGE}:latest ${ECR_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:latest"
+
+                        // Push both tags
+                        bat "docker push ${ECR_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${DOCKER_TAG}"
+                        bat "docker push ${ECR_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:latest"
+                    }
+                }
+            }
+        }
+
+        stage('Run Docker Container') {
+            steps {
+                script {
+                    bat 'docker rm -f jenkins-demo-container || echo "No container to remove"'
+                    bat "docker run -d -p 8080:9090 --name jenkins-demo-container ${DOCKER_IMAGE}:latest"
+                }
+            }
+        }
+
+        stage('Archive JAR') {
+            steps {
+                archiveArtifacts artifacts: 'target/*.jar', fingerprint: true
+            }
+        }
+    }
+}
+
+✅ Key Points:
+
+Automatic ECR Repo Creation:
+
+aws ecr describe-repositories --repository-names jenkins-demo --region ap-south-1 || \
+aws ecr create-repository --repository-name jenkins-demo --region ap-south-1
+
+
+This ensures the pipeline doesn’t fail if the repository doesn’t exist.
+
+AWS Credentials:
+
+Use Jenkins AWS Credentials plugin.
+
+Store IAM keys in credentials with ID: aws-credentials.
+
+Docker Tags:
+
+${BUILD_NUMBER} → versioned image
+
+latest → always points to newest build
+
+Container Run:
+
+Stops & removes old container if exists.
+
+Runs new container locally using latest
