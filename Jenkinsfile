@@ -20,6 +20,14 @@ pipeline {
                 bat 'mvn clean test'
             }
         }
+        
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv('sonarqube-server') {
+                    bat 'mvn sonar:sonar -Dsonar.projectKey=jenkins-demo -Dsonar.host.url=http://localhost:9000 -Dsonar.login=sqa_16c37050dd77122f93efe35805c0fb17c67b2729'
+                }
+            }
+        }
 
         stage('Package') {
             steps {
