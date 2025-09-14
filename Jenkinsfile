@@ -2,14 +2,14 @@ pipeline {
     agent any
 
     tools {
-        jdk 'JDK17'       // Use the name you configured in Jenkins
-        maven 'Maven3'    // Use the name you configured in Jenkins
+        jdk 'java21'           // Name of JDK you configured in Jenkins
+        maven 'maven3'        // Name of Maven you configured in Jenkins
     }
 
     stages {
         stage('Checkout') {
             steps {
-                git branch: 'master', url: 'https://github.com/Msdrushi07/Jenkins.git'
+                git branch: 'main', url: 'https://github.com/your-repo/your-project.git'
             }
         }
 
@@ -21,7 +21,7 @@ pipeline {
 
         stage('Package') {
             steps {
-                bat 'mvn clean package -DskipTests'
+                 bat 'mvn clean package -DskipTests'
             }
         }
 
